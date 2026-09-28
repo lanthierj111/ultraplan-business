@@ -1,0 +1,17 @@
+# Ultraplan Business
+.env
+*.log
+node_modules/
+dist/
+build/
+*.tmp
+*.temp
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
