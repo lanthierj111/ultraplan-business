@@ -1,6 +1,7 @@
 # Ultraplan Business
 .env
 *.log
+!loop-*/*.log
 node_modules/
 dist/
 build/

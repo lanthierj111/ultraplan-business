@@ -1,0 +1,81 @@
+# Loop 1 — BUILD: AI Code Review Bot
+
+**Date:** 2026-09-28  
+**Agent:** Hermes (kimi-k3 / NVIDIA NIM)  
+**Project:** ai-code-review-bot  
+**Repo:** https://github.com/lanthierj111/ai-code-review-bot  
+**Deployed:** https://ai-code-review-bot-five.vercel.app
+
+---
+
+## Scaffold Created
+
+| File | Purpose |
+|------|---------|
+| `package.json` | Next.js 14 + TypeScript + Octokit + OpenAI SDK |
+| `vercel.json` | Vercel config (60s function timeout) |
+| `.github/workflows/ci.yml` | Lint + type-check + build |
+| `src/app/api/webhook/route.ts` | GitHub webhook handler (dynamic) |
+| `src/lib/github.ts` | Octokit client + webhooks + API helpers |
+| `src/lib/nemotron.ts` | Lazy NVIDIA Nemotron 3 Ultra client |
+| `src/lib/review.ts` | PR review orchestration + Checks API |
+| `src/types/index.ts` | TypeScript interfaces |
+| `README.md` | Documentation |
+| `.env.example` | Environment template |
+| `tsconfig.json` | Strict TypeScript config |
+
+---
+
+## Build & Deploy
+
+| Step | Status | Details |
+|------|--------|---------|
+| `npm install` | ✅ | 374 packages |
+| `npm run build` | ✅ | Next.js 14.2.35, type-check pass |
+| `vercel --prod` | ✅ | 41s build, deployed to `ai-code-review-bot-five.vercel.app` |
+
+---
+
+## Next Steps (Manual)
+
+1. **Create GitHub App** at https://github.com/settings/apps/new:
+   - Name: `ai-code-review-bot`
+   - Homepage: `https://ai-code-review-bot-five.vercel.app`
+   - Webhook URL: `https://ai-code-review-bot-five.vercel.app/api/webhook`
+   - Webhook secret: generate random string
+   - Permissions:
+     - Pull requests: Read & Write
+     - Checks: Read & Write
+     - Contents: Read
+     - Metadata: Read
+   - Events: Pull request (opened, synchronize, reopened)
+
+2. **Add Vercel Environment Variables** (Settings → Environment Variables):
+   ```
+   GITHUB_APP_ID=<from GitHub App>
+   GITHUB_PRIVATE_KEY=<generate from GitHub App>
+   GITHUB_WEBHOOK_SECRET=<from step 1>
+   GITHUB_TOKEN=<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>
+   NVIDIA_API_KEY=<rotated key from earlier>
+   ```
+
+3. **Install GitHub App** on target repos (or own account)
+
+4. **Test**: Open a PR → webhook triggers → review appears in Checks tab
+
+---
+
+## Loop 1 Metrics
+
+| Metric | Value |
+|--------|-------|
+| Scaffold time | ~2 hours |
+| Build time | 41s |
+| Deploy time | ~60s |
+| Lines of code | ~1,200 |
+| Files created | 20+ |
+| Tests | 0 (TDD next loop) |
+
+---
+
+*Loop 1 BUILD complete. Next: DEPLOY + GROW (configure GitHub App, install, test, iterate).*
