@@ -1,0 +1,25 @@
+.vercel
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+private-key.txt
+*-private-key.txt
+
+# Build / deps
+node_modules/
+.next/
+out/
+dist/
+build/
+
+# Logs
+*.log
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

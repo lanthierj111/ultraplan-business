@@ -1,5 +1,7 @@
 # Ultraplan Business
 .env
+.env.*
+!.env.example
 *.log
 !loop-*/*.log
 node_modules/
@@ -7,6 +9,18 @@ dist/
 build/
 *.tmp
 *.temp
+
+# Secrets — NEVER commit these
+*.pem
+private-key.txt
+*-private-key.txt
+ultraplan/config/.env*
+ultraplan/config/hermes-config.yaml
+
+# Next.js
+.next/
+out/
+.vercel
 
 # IDE
 .vscode/
