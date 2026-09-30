@@ -32,3 +32,4 @@ app.get("/calc", (req, res) => {
 
 module.exports = { findUser, totalScore, parseConfig, STRIPE_SECRET };
 // run: 18:26:27
+// run2: 18:32:28
