@@ -3,14 +3,15 @@ import { reviewCode } from './nemotron';
 
 export async function handlePullRequest(payload: any): Promise<void> {
   const { pull_request, repository } = payload;
-  const { number, head, base, title } = pull_request;
-  const { owner, repo } = repository;
+  const { number, head, title } = pull_request;
+  // The webhook payload exposes repository.name (not repository.repo).
+  const { owner, name: repoName } = repository;
   const headSha = head.sha;
 
-  console.log(`Reviewing PR #${number}: ${title}`);
+  console.log(`Reviewing PR #${number}: ${title} (${owner.login}/${repoName})`);
 
-  const files = await getPullRequestFiles(owner.login, repo.name, number);
-  const diff = await getPullRequestDiff(owner.login, repo.name, number);
+  const files = await getPullRequestFiles(owner.login, repoName, number);
+  const diff = await getPullRequestDiff(owner.login, repoName, number);
 
   const allIssues: Array<{
     path: string;
@@ -43,24 +44,33 @@ export async function handlePullRequest(payload: any): Promise<void> {
     }
   }
 
-  await createCheckRun(
-    owner.login,
-    repo.name,
-    headSha,
-    'AI Code Review',
-    allIssues.some(i => i.severity === 'critical' || i.severity === 'major') ? 'failure' : 'success',
-    {
-      title: `AI Code Review: ${allIssues.length} issue(s) found`,
-      summary: buildSummary(allIssues),
-      annotations: allIssues.map(i => ({
-        path: i.path,
-        start_line: i.line,
-        end_line: i.line,
-        annotation_level: mapSeverity(i.severity),
-        message: i.suggestion ? `${i.message}\n\nSuggestion: ${i.suggestion}` : i.message,
-      })),
-    }
-  );
+  const conclusion = allIssues.some(i => i.severity === 'critical' || i.severity === 'major')
+    ? ('failure' as const)
+    : ('success' as const);
+
+  const output = {
+    title: `AI Code Review: ${allIssues.length} issue(s) found`,
+    summary: buildSummary(allIssues),
+    // GitHub rejects the whole check run if any annotation points outside the
+    // diff (422). Keep annotations advisory: fall back to a summary-only run.
+    annotations: allIssues.slice(0, 50).map(i => ({
+      path: i.path,
+      start_line: i.line,
+      end_line: i.line,
+      annotation_level: mapSeverity(i.severity),
+      message: i.suggestion ? `${i.message}\n\nSuggestion: ${i.suggestion}` : i.message,
+    })),
+  };
+
+  try {
+    await createCheckRun(owner.login, repoName, headSha, 'AI Code Review', conclusion, output);
+  } catch (err) {
+    console.error('Check run with annotations failed, retrying summary-only:', err);
+    await createCheckRun(owner.login, repoName, headSha, 'AI Code Review', conclusion, {
+      title: output.title,
+      summary: output.summary,
+    });
+  }
 }
 
 function shouldReviewFile(filename: string): boolean {
