@@ -1,15 +1,12 @@
-import { Octokit } from '@octokit/rest';
-import { Webhooks } from '@octokit/webhooks';
+import type { Octokit } from '@octokit/rest';
 
-export const octokit = new Octokit({
-  auth: process.env.GITHUB_TOKEN,
-});
-
-export const webhooks = new Webhooks({
-  secret: process.env.GITHUB_WEBHOOK_SECRET || 'build-time-placeholder',
-});
+/**
+ * GitHub API helpers. Every function receives an installation-authenticated
+ * Octokit (see app-auth.ts) because the Checks API rejects user tokens.
+ */
 
 export async function getPullRequestDiff(
+  octokit: Octokit,
   owner: string,
   repo: string,
   pullNumber: number
@@ -24,6 +21,7 @@ export async function getPullRequestDiff(
 }
 
 export async function getPullRequestFiles(
+  octokit: Octokit,
   owner: string,
   repo: string,
   pullNumber: number
@@ -32,18 +30,28 @@ export async function getPullRequestFiles(
     owner,
     repo,
     pull_number: pullNumber,
+    per_page: 100,
   });
   return data;
 }
 
+export interface CheckAnnotation {
+  path: string;
+  start_line: number;
+  end_line: number;
+  annotation_level: 'notice' | 'warning' | 'failure';
+  message: string;
+}
+
 export async function createCheckRun(
+  octokit: Octokit,
   owner: string,
   repo: string,
   headSha: string,
   name: string,
   conclusion: 'success' | 'failure' | 'neutral',
-  output: { title: string; summary: string; annotations?: any[] }
-) {
+  output: { title: string; summary: string; annotations?: CheckAnnotation[] }
+): Promise<void> {
   await octokit.rest.checks.create({
     owner,
     repo,
@@ -52,25 +60,5 @@ export async function createCheckRun(
     status: 'completed',
     conclusion,
     output,
-  });
-}
-
-export async function createReviewComment(
-  owner: string,
-  repo: string,
-  pullNumber: number,
-  body: string,
-  commitId: string,
-  path: string,
-  line: number
-) {
-  await octokit.rest.pulls.createReviewComment({
-    owner,
-    repo,
-    pull_number: pullNumber,
-    body,
-    commit_id: commitId,
-    path,
-    line,
   });
 }

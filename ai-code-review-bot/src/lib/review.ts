@@ -1,17 +1,19 @@
 import { getPullRequestDiff, getPullRequestFiles, createCheckRun } from './github';
 import { reviewCode } from './nemotron';
+import { octokitForInstallation } from './app-auth';
 
 export async function handlePullRequest(payload: any): Promise<void> {
-  const { pull_request, repository } = payload;
+  const { pull_request, repository, installation } = payload;
   const { number, head, title } = pull_request;
   // The webhook payload exposes repository.name (not repository.repo).
   const { owner, name: repoName } = repository;
   const headSha = head.sha;
+  const octokit = await octokitForInstallation(installation.id);
 
   console.log(`Reviewing PR #${number}: ${title} (${owner.login}/${repoName})`);
 
-  const files = await getPullRequestFiles(owner.login, repoName, number);
-  const diff = await getPullRequestDiff(owner.login, repoName, number);
+  const files = await getPullRequestFiles(octokit, owner.login, repoName, number);
+  const diff = await getPullRequestDiff(octokit, owner.login, repoName, number);
 
   const allIssues: Array<{
     path: string;
@@ -63,10 +65,10 @@ export async function handlePullRequest(payload: any): Promise<void> {
   };
 
   try {
-    await createCheckRun(owner.login, repoName, headSha, 'AI Code Review', conclusion, output);
+    await createCheckRun(octokit, owner.login, repoName, headSha, 'AI Code Review', conclusion, output);
   } catch (err) {
     console.error('Check run with annotations failed, retrying summary-only:', err);
-    await createCheckRun(owner.login, repoName, headSha, 'AI Code Review', conclusion, {
+    await createCheckRun(octokit, owner.login, repoName, headSha, 'AI Code Review', conclusion, {
       title: output.title,
       summary: output.summary,
     });
