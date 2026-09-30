@@ -1,37 +1,47 @@
 loop: 1
-phase: BUILD_COMPLETE
+phase: OPERATIONAL
 opportunity:
   name: "AI Code Review Bot"
   selected: true
   score: 9.2
   tam_usd: 50000000
   pain_score: 9
-  build_time_days: 10
-  tech_stack: "Next.js + Vercel + GitHub App + Nemotron 3 Ultra"
-  why_now: "AI coding exploding; GitHub Marketplace distribution"
-  distribution: "GitHub Marketplace + dev.to + Twitter dev community"
+  tech_stack: "Next.js + Vercel + GitHub App + NVIDIA Nemotron 3 Ultra"
 build:
-  repo: "https://github.com/lanthierj111/ai-code-review-bot"
+  repo: "https://github.com/lanthierj111/ultraplan-business"
+  subdir: "ai-code-review-bot"
   deploy_url: "https://ai-code-review-bot-five.vercel.app"
-  build_time_s: 41
-  deploy_time_s: 60
-  lines_of_code: 1200
-  files_created: 22
   build_pass: true
   type_check_pass: true
-  lint_pass: true
 deploy:
-  status: "DEPLOYED"
-  vercel_url: "https://ai-code-review-bot-five.vercel.app"
-  vercel_alias: "https://ai-code-review-bot-five.vercel.app"
-  vercel_inspector: "https://vercel.com/lanthierj111-1719/ai-code-review-bot/3p9BjnBq1P68eXisvSEkeLWES3zL"
-  github_app_created: false
-  vercel_env_configured: false
+  status: "OPERATIONAL"
+  webhook_signature_verified: true
+  installation_id: 166303269
+  app_id: 5127527
+  app_slug: "ai-code-review-bot-jacobnovus"
+  auth_model: "app JWT -> installation access token (cached 1h)"
+  check_runs_working: true
+verification:
+  test_pr: "https://github.com/lanthierj111/ultraplan-business/pull/3"
+  defects_planted: 5
+  defects_found: 5
+  precision: "5/5 (100%)"
+  review_latency_s: 32
+  check_run_status: "completed / failure"
+  annotations_posted: 5
+bugs_fixed:
+  - "trailing \\r in Vercel env vars broke webhook HMAC (401 on every delivery)"
+  - "installation had 0 repositories + outdated permissions (no events delivered)"
+  - "repository.repo typo crashed the handler (500)"
+  - "Checks API rejected user token: needs installation token (403)"
+  - "review exceeded Vercel Hobby 60s function cap; parallelised + capped"
 growth:
   day_7_visitors: 0
   day_7_signups: 0
 monetize:
   mrr_usd: 0
-reinvest:
-  budget_usd: 0
-next_phase: "DEPLOY (GitHub App + Vercel env)"
+constraints:
+  - "Vercel Hobby: 60s function cap (Pro raises to 300s)"
+  - "NVIDIA free tier latency varies 1s..30s+"
+  - "Checks API requires installation token, never a PAT"
+next_phase: "GROW (cleanup demo files, tighten permissions, landing page, Marketplace draft)"

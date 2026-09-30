@@ -1,0 +1,90 @@
+# Loop 1 — DEPLOY: AI Code Review Bot (OPERATIONAL)
+
+**Date:** 2026-09-30
+**Status:** ✅ **WORKING END-TO-END**
+
+---
+
+## Result
+
+```
+CHECK RUN: "AI Code Review"
+  status     : completed / failure
+  title      : AI Code Review: 5 issue(s) found
+  summary    : 3 critical, 2 major. Reviewed 1 of 1 changed file(s) in 32s.
+  annotations: 5
+```
+
+Test PR: https://github.com/lanthierj111/ultraplan-business/pull/3
+
+### What the bot found (5/5 deliberate defects)
+
+| Line | Severity | Finding |
+|------|----------|---------|
+| 4 | critical | Hardcoded admin password in source code |
+| 8 | critical | MD5 used for password hashing (cryptographically broken) |
+| 13 | critical | Command injection — user input concatenated into a shell command |
+| 18 | major | Unbounded recursion on negative input → stack overflow / DoS |
+| 23 | major | Assignment (`=`) instead of comparison (`===`) in `if` — always true |
+
+---
+
+## Architecture (final)
+
+```
+PR opened/synchronized
+  └─> GitHub webhook (HMAC-SHA256 verified)
+        └─> Vercel function /api/webhook
+              ├─ build app JWT (RS256, private key)
+              ├─ exchange for installation access token (cached 1h)
+              ├─ fetch PR files + diff  (installation token)
+              ├─ review in parallel with NVIDIA Nemotron 3 Ultra
+              └─ POST check run with inline annotations (installation token)
+```
+
+---
+
+## Bugs found and fixed during bring-up
+
+| # | Symptom | Root cause | Fix |
+|---|---------|-----------|-----|
+| 1 | Every webhook returned **401** | Env vars set via Windows `echo` carried a trailing `\r`; the HMAC secret never matched | Re-set all Vercel env vars from files instead of `echo` |
+| 2 | No `pull_request` events ever delivered | Installation had **0 repositories** granted and `permissions: {}` | User accepted the pending permission update, granted the repo |
+| 3 | Handler returned **500** | `const { owner, repo } = repository` — the payload exposes `repository.name`, not `.repo` | Destructure `name` instead |
+| 4 | Check run rejected **403 "You must authenticate via a GitHub App"** | Bot used a user token; the Checks API requires an installation token | Added `app-auth.ts`: app JWT → installation token |
+| 5 | Function **timed out at 60s** (Vercel Hobby cap) | Sequential per-file model calls, unbounded prompt and token budget | Parallel file review, 3-file cap, 12k-char prompt cap, 35s per-call timeout, 45s wall budget |
+
+---
+
+## Secrets involved (all must be rotated)
+
+| Secret | Where used |
+|--------|-----------|
+| GitHub App private key | `GITHUB_PRIVATE_KEY` (Vercel) |
+| GitHub App ID `5127527` | `GITHUB_APP_ID` (Vercel) |
+| Webhook secret | `GITHUB_WEBHOOK_SECRET` (Vercel + app settings) |
+| NVIDIA API key | `NVIDIA_API_KEY` (Vercel) — used for the model calls |
+| GitHub tokens | `GITHUB_TOKEN` (obsolete now) + classic PAT used for setup |
+
+The bot no longer needs a user token: installation tokens are minted per request.
+
+---
+
+## Constraints discovered
+
+- **Vercel Hobby caps a function at 60s.** A plan upgrade to Pro (300s) would remove the
+  file-count and prompt caps and allow reviewing whole PRs.
+- **Free-tier NVIDIA endpoints are variable.** Latency ranged 1s → 30s+ for the same
+  prompt. Retries and fallbacks matter more than raw model choice.
+- **Checks API is app-only.** Any future feature that posts to a PR must use the
+  installation token, never a PAT.
+
+---
+
+## Next for Loop 1 (GROW)
+
+1. Remove the `src/demo/*` files used for testing
+2. Tighten app permissions: `contents` → read-only (currently write)
+3. Narrow repository access from **all repositories** to selected ones
+4. Add a landing page + `README` with a demo GIF
+5. Publish to GitHub Marketplace (draft) and invite 3 beta teams
