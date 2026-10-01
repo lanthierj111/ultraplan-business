@@ -1,61 +1,85 @@
 import { getPullRequestDiff, getPullRequestFiles, createCheckRun } from './github';
-import { reviewCode } from './nemotron';
+import { reviewCode, type ReviewIssue } from './nemotron';
 import { octokitForInstallation } from './app-auth';
+import { loadRules, type ReviewRules } from './rules';
+
+const MAX_FILES = 3;
+const MAX_DIFF_CHARS = 12_000;
+const BUDGET_MS = 45_000;
+const FREE_MONTHLY_QUOTA = 100;
+
+interface CollectedIssue extends ReviewIssue {
+  path: string;
+}
 
 export async function handlePullRequest(payload: any): Promise<void> {
+  const startedAt = Date.now();
   const { pull_request, repository, installation } = payload;
   const { number, head, title } = pull_request;
-  // The webhook payload exposes repository.name (not repository.repo).
   const { owner, name: repoName } = repository;
   const headSha = head.sha;
   const octokit = await octokitForInstallation(installation.id);
 
   console.log(`Reviewing PR #${number}: ${title} (${owner.login}/${repoName})`);
 
-  const files = await getPullRequestFiles(octokit, owner.login, repoName, number);
-  const diff = await getPullRequestDiff(octokit, owner.login, repoName, number);
+  const [files, diff, rules, quota] = await Promise.all([
+    getPullRequestFiles(octokit, owner.login, repoName, number),
+    getPullRequestDiff(octokit, owner.login, repoName, number),
+    loadRules(octokit, owner.login, repoName, headSha),
+    getQuotaUsage(octokit, owner.login, repoName),
+  ]);
 
-  const allIssues: Array<{
-    path: string;
-    line: number;
-    severity: string;
-    message: string;
-    suggestion?: string;
-  }> = [];
+  const targets = files
+    .filter((f) => shouldReviewFile(f.filename, rules) && f.status !== 'removed')
+    .slice(0, rules.max_files ?? MAX_FILES);
 
-  for (const file of files) {
-    if (!shouldReviewFile(file.filename)) continue;
+  console.log(
+    `Files: ${files.length} changed, reviewing ${targets.length}` +
+      ` (${files.length - targets.length} skipped by ignore/cap)`
+  );
 
-    try {
-      const fileDiff = extractFileDiff(diff, file.filename);
-      if (!fileDiff) continue;
-
-      const result = await reviewCode(fileDiff, detectLanguage(file.filename), file.filename);
-
-      for (const issue of result.issues) {
-        allIssues.push({
-          path: file.filename,
-          line: issue.line,
-          severity: issue.severity,
-          message: issue.message,
-          suggestion: issue.suggestion,
-        });
+  const results = await Promise.all(
+    targets.map(async (file): Promise<CollectedIssue[]> => {
+      if (Date.now() - startedAt > BUDGET_MS) {
+        console.warn(`Budget exhausted, skipping ${file.filename}`);
+        return [];
       }
-    } catch (err) {
-      console.error(`Failed to review ${file.filename}:`, err);
-    }
-  }
+      try {
+        const fileDiff = extractFileDiff(diff, file.filename);
+        if (!fileDiff) return [];
 
-  const conclusion = allIssues.some(i => i.severity === 'critical' || i.severity === 'major')
+        const prompt = fileDiff.length > (rules.max_diff_chars ?? MAX_DIFF_CHARS)
+          ? `${fileDiff.slice(0, rules.max_diff_chars ?? MAX_DIFF_CHARS)}\n... (diff truncated)`
+          : fileDiff;
+
+        const result = await reviewCode(
+          prompt,
+          detectLanguage(file.filename),
+          file.filename,
+          rules
+        );
+        return result.issues.map((issue) => ({ ...issue, path: file.filename }));
+      } catch (err) {
+        console.error(`Failed to review ${file.filename}:`, err);
+        return [];
+      }
+    })
+  );
+
+  const allIssues = results.flat();
+
+  const used = quota.used;
+  const remaining = Math.max(0, FREE_MONTHLY_QUOTA - used);
+  const quotaInfo = `\n\n---\n📊 **Quota** : ${used}/${FREE_MONTHLY_QUOTA} reviews used this month (${remaining} remaining)`;
+
+  const conclusion = allIssues.some((i) => i.severity === 'critical' || i.severity === 'major')
     ? ('failure' as const)
     : ('success' as const);
 
   const output = {
     title: `AI Code Review: ${allIssues.length} issue(s) found`,
-    summary: buildSummary(allIssues),
-    // GitHub rejects the whole check run if any annotation points outside the
-    // diff (422). Keep annotations advisory: fall back to a summary-only run.
-    annotations: allIssues.slice(0, 50).map(i => ({
+    summary: buildSummary(allIssues, targets.length, files.length, Date.now() - startedAt) + quotaInfo,
+    annotations: allIssues.slice(0, 50).map((i) => ({
       path: i.path,
       start_line: i.line,
       end_line: i.line,
@@ -75,9 +99,32 @@ export async function handlePullRequest(payload: any): Promise<void> {
   }
 }
 
-function shouldReviewFile(filename: string): boolean {
-  const reviewedExtensions = ['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs', '.java', '.cs', '.php', '.rb'];
-  return reviewedExtensions.some(ext => filename.endsWith(ext));
+async function getQuotaUsage(octokit: any, owner: string, repo: string): Promise<{ used: number }> {
+  // TODO: implémenter le stockage du quota (ex: Redis, fichier JSON, GitHub variable)
+  // Pour l'instant, retourne 0 pour ne pas bloquer
+  return { used: 0 };
+}
+
+function shouldReviewFile(filename: string, rules: ReviewRules): boolean {
+  const ext = filename.split('.').pop()?.toLowerCase();
+  if (rules.extensions) {
+    const normalized = rules.extensions.map((e) => e.replace(/^\./, '').toLowerCase());
+    if (!normalized.includes(ext || '')) return false;
+  }
+  if (rules.ignore?.some((pattern) => matchesGlob(filename, pattern))) return false;
+  return DEFAULT_EXTENSIONS.some((e) => filename.endsWith(e));
+}
+
+const DEFAULT_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs', '.java', '.cs', '.php', '.rb'];
+
+function matchesGlob(filename: string, pattern: string): boolean {
+  const re = new RegExp(
+    '^' + pattern
+      .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+      .replace(/\*/g, '.*')
+      .replace(/\?/g, '.') + '$'
+  );
+  return re.test(filename);
 }
 
 function detectLanguage(filename: string): string {
@@ -93,7 +140,7 @@ function detectLanguage(filename: string): string {
 function extractFileDiff(fullDiff: string, filename: string): string | null {
   const lines = fullDiff.split('\n');
   let inFile = false;
-  let fileLines: string[] = [];
+  const fileLines: string[] = [];
 
   for (const line of lines) {
     if (line.startsWith('diff --git')) {
@@ -112,24 +159,24 @@ function extractFileDiff(fullDiff: string, filename: string): string | null {
 
 function mapSeverity(sev: string): 'failure' | 'warning' | 'notice' {
   switch (sev) {
-    case 'critical': return 'failure';
-    case 'major': return 'failure';
-    case 'minor': return 'warning';
-    default: return 'notice';
+    case 'critical':
+    case 'major':
+      return 'failure';
+    case 'minor':
+      return 'warning';
+    default:
+      return 'notice';
   }
 }
 
-function buildSummary(issues: any[]): string {
-  const critical = issues.filter(i => i.severity === 'critical').length;
-  const major = issues.filter(i => i.severity === 'major').length;
-  const minor = issues.filter(i => i.severity === 'minor').length;
-  const suggestion = issues.filter(i => i.severity === 'suggestion').length;
+function buildSummary(issues: CollectedIssue[], reviewed: number, changed: number, elapsedMs: number): string {
+  const count = (sev: string) => issues.filter((i) => i.severity === sev).length;
+  const parts: string[] = [];
+  if (count('critical')) parts.push(`${count('critical')} critical`);
+  if (count('major')) parts.push(`${count('major')} major`);
+  if (count('minor')) parts.push(`${count('minor')} minor`);
+  if (count('suggestion')) parts.push(`${count('suggestion')} suggestions`);
 
-  const parts = [];
-  if (critical) parts.push(`${critical} critical`);
-  if (major) parts.push(`${major} major`);
-  if (minor) parts.push(`${minor} minor`);
-  if (suggestion) parts.push(`${suggestion} suggestions`);
-
-  return parts.length > 0 ? parts.join(', ') : 'No issues found';
+  const found = parts.length > 0 ? parts.join(', ') : 'No issues found';
+  return `${parts.join(', ')}. Reviewed ${reviewed} of ${changed} changed file(s) in ${Math.round(elapsedMs / 1000)}s.`;
 }

@@ -1,3 +1,10 @@
+export interface ReviewIssue {
+  severity: 'critical' | 'major' | 'minor' | 'suggestion';
+  line: number;
+  message: string;
+  suggestion?: string;
+}
+
 import OpenAI from 'openai';
 
 let nemotron: OpenAI | null = null;
@@ -17,15 +24,11 @@ export const MODEL = 'nvidia/nemotron-3-ultra-550b-a55b';
 export async function reviewCode(
   diff: string,
   language: string,
-  filename: string
+  filename: string,
+  rules?: any
 ): Promise<{
   summary: string;
-  issues: Array<{
-    severity: 'critical' | 'major' | 'minor' | 'suggestion';
-    line: number;
-    message: string;
-    suggestion?: string;
-  }>;
+  issues: ReviewIssue[];
 }> {
   const prompt = buildReviewPrompt(diff, language, filename);
 
