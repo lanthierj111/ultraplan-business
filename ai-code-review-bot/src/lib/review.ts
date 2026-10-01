@@ -2,10 +2,26 @@ import { getPullRequestDiff, getPullRequestFiles, createCheckRun } from './githu
 import { reviewCode } from './nemotron';
 import { octokitForInstallation } from './app-auth';
 
+// Vercel Hobby caps a function at 60s. Keep the whole review comfortably inside
+// that: bounded file count, bounded prompt size, and a wall-clock budget.
+const MAX_FILES = 2;
+const MAX_DIFF_CHARS = 8_000;
+const PER_FILE_TIMEOUT_MS = 20_000;
+const BUDGET_MS = 45_000;
+const FREE_MONTHLY_QUOTA = 100;
+
+interface CollectedIssue {
+  path: string;
+  line: number;
+  severity: string;
+  message: string;
+  suggestion?: string;
+}
+
 export async function handlePullRequest(payload: any): Promise<void> {
+  const startedAt = Date.now();
   const { pull_request, repository, installation } = payload;
   const { number, head, title } = pull_request;
-  // The webhook payload exposes repository.name (not repository.repo).
   const { owner, name: repoName } = repository;
   const headSha = head.sha;
   const octokit = await octokitForInstallation(installation.id);
@@ -15,59 +31,62 @@ export async function handlePullRequest(payload: any): Promise<void> {
   const files = await getPullRequestFiles(octokit, owner.login, repoName, number);
   const diff = await getPullRequestDiff(octokit, owner.login, repoName, number);
 
-  const allIssues: Array<{
-    path: string;
-    line: number;
-    severity: string;
-    message: string;
-    suggestion?: string;
-  }> = [];
+  const targets = files
+    .filter((f) => shouldReviewFile(f.filename) && f.status !== 'removed')
+    .slice(0, MAX_FILES);
 
-  for (const file of files) {
-    if (!shouldReviewFile(file.filename)) continue;
+  console.log(
+    `Files: ${files.length} changed, reviewing ${targets.length}` +
+      ` (${files.length - targets.length} skipped by cap)`
+  );
 
+  // Process files in parallel with individual timeouts
+  const reviewPromises = targets.map(async (file): Promise<ReviewIssue[]> => {
+    if (Date.now() - startedAt > BUDGET_MS) {
+      console.warn(`Budget exhausted, skipping ${file.filename}`);
+      return [];
+    }
     try {
       const fileDiff = extractFileDiff(diff, file.filename);
-      if (!fileDiff) continue;
+      if (!fileDiff) return [];
 
-      const result = await reviewCode(fileDiff, detectLanguage(file.filename), file.filename);
+      const prompt = fileDiff.length > MAX_DIFF_CHARS
+        ? `${fileDiff.slice(0, MAX_DIFF_CHARS)}\n... (diff truncated)`
+        : fileDiff;
 
-      for (const issue of result.issues) {
-        allIssues.push({
-          path: file.filename,
-          line: issue.line,
-          severity: issue.severity,
-          message: issue.message,
-          suggestion: issue.suggestion,
+      // Race between model call and timeout
+      const timeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error('PER_FILE_TIMEOUT')), PER_FILE_TIMEOUT_MS);
         });
-      }
+      const result = await Promise.race([
+        reviewCode(prompt, detectLanguage(file.filename), file.filename),
+        timeoutPromise,
+      ]);
+
+      return result.issues.map((issue) => ({ ...issue, path: file.filename }));
     } catch (err) {
       console.error(`Failed to review ${file.filename}:`, err);
+      return [];
     }
-  }
+  });
+
+  const results = await Promise.all(reviewPromises);
+  const allIssues = results.flat();
 
   const FREE_MONTHLY_QUOTA = 100;
-
-  // TODO: replace with real quota tracking (Redis, DB, GitHub variable)
-  const used = 0;
+  const used = 0; // TODO: real quota tracking
   const remaining = FREE_MONTHLY_QUOTA;
-  const pctUsed = 0;
 
-  const conclusion = allIssues.some(i => i.severity === 'critical' || i.severity === 'major')
+  const conclusion = allIssues.some((i) => i.severity === 'critical' || i.severity === 'major')
     ? ('failure' as const)
     : ('success' as const);
 
   let quotaInfo = `\n\n---\n📊 **Quota** : 0/${FREE_MONTHLY_QUOTA} reviews used this month (${FREE_MONTHLY_QUOTA} remaining)`;
-  if (false) { // pctUsed >= 80
-    quotaInfo += `\n\n🚀 **Proche de la limite** — [Passez au plan Pro](https://ai-code-review-bot-five.vercel.app/#pricing) pour des reviews illimitées, règles personnalisées et file d'attente prioritaire.`;
-  }
 
   const output = {
     title: `AI Code Review: ${allIssues.length} issue(s) found`,
-    summary: buildSummary(allIssues) + quotaInfo,
-    // GitHub rejects the whole check run if any annotation points outside the
-    // diff (422). Keep annotations advisory: fall back to a summary-only run.
-    annotations: allIssues.slice(0, 50).map(i => ({
+    summary: buildSummary(allIssues) + `\n\n---\n📊 **Quota** : 0/${FREE_MONTHLY_QUOTA} reviews used this month (${FREE_MONTHLY_QUOTA} remaining)`,
+    annotations: allIssues.slice(0, 50).map((i) => ({
       path: i.path,
       start_line: i.line,
       end_line: i.line,
@@ -81,8 +100,8 @@ export async function handlePullRequest(payload: any): Promise<void> {
   } catch (err) {
     console.error('Check run with annotations failed, retrying summary-only:', err);
     await createCheckRun(octokit, owner.login, repoName, headSha, 'AI Code Review', conclusion, {
-      title: output.title,
-      summary: output.summary,
+      title: `AI Code Review: ${allIssues.length} issue(s) found`,
+      summary: buildSummary(allIssues) + `\n\n---\n📊 **Quota** : 0/${FREE_MONTHLY_QUOTA} reviews used this month (${FREE_MONTHLY_QUOTA} remaining)`,
     });
   }
 }
@@ -105,7 +124,7 @@ function detectLanguage(filename: string): string {
 function extractFileDiff(fullDiff: string, filename: string): string | null {
   const lines = fullDiff.split('\n');
   let inFile = false;
-  let fileLines: string[] = [];
+  const fileLines: string[] = [];
 
   for (const line of lines) {
     if (line.startsWith('diff --git')) {
@@ -124,10 +143,13 @@ function extractFileDiff(fullDiff: string, filename: string): string | null {
 
 function mapSeverity(sev: string): 'failure' | 'warning' | 'notice' {
   switch (sev) {
-    case 'critical': return 'failure';
-    case 'major': return 'failure';
-    case 'minor': return 'warning';
-    default: return 'notice';
+    case 'critical':
+    case 'major':
+      return 'failure';
+    case 'minor':
+      return 'warning';
+    default:
+      return 'notice';
   }
 }
 
@@ -144,4 +166,12 @@ function buildSummary(issues: any[]): string {
   if (suggestion) parts.push(`${suggestion} suggestions`);
 
   return parts.length > 0 ? parts.join(', ') : 'No issues found';
+}
+
+interface ReviewIssue {
+  path: string;
+  line: number;
+  severity: string;
+  message: string;
+  suggestion?: string;
 }
