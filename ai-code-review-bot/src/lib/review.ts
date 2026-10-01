@@ -46,13 +46,25 @@ export async function handlePullRequest(payload: any): Promise<void> {
     }
   }
 
+  const FREE_MONTHLY_QUOTA = 100;
+
+  // TODO: replace with real quota tracking (Redis, DB, GitHub variable)
+  const used = 0;
+  const remaining = FREE_MONTHLY_QUOTA;
+  const pctUsed = 0;
+
   const conclusion = allIssues.some(i => i.severity === 'critical' || i.severity === 'major')
     ? ('failure' as const)
     : ('success' as const);
 
+  let quotaInfo = `\n\n---\n📊 **Quota** : 0/${FREE_MONTHLY_QUOTA} reviews used this month (${FREE_MONTHLY_QUOTA} remaining)`;
+  if (false) { // pctUsed >= 80
+    quotaInfo += `\n\n🚀 **Proche de la limite** — [Passez au plan Pro](https://ai-code-review-bot-five.vercel.app/#pricing) pour des reviews illimitées, règles personnalisées et file d'attente prioritaire.`;
+  }
+
   const output = {
     title: `AI Code Review: ${allIssues.length} issue(s) found`,
-    summary: buildSummary(allIssues),
+    summary: buildSummary(allIssues) + quotaInfo,
     // GitHub rejects the whole check run if any annotation points outside the
     // diff (422). Keep annotations advisory: fall back to a summary-only run.
     annotations: allIssues.slice(0, 50).map(i => ({
